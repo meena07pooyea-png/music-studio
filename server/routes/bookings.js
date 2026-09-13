@@ -1,0 +1,32 @@
+import express from 'express';
+import db from '../db.js';
+const router=express.Router();
+const addNotification = (type,title,message) => db.prepare('INSERT INTO notifications(type,title,message) VALUES(?,?,?)').run(type,title,message);
+const auth=(req,res,next)=>{if(!req.session.userId)return res.status(401).json({error:'กรุณาเข้าสู่ระบบ'});next();};
+const admin=(req,res,next)=>{if(req.session.role!=='admin')return res.status(403).json({error:'Forbidden'});next();};
+const validTime=t=>/^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+const overlapSql=`SELECT id FROM bookings WHERE studio_id=? AND date=? AND status IN ('pending','confirmed') AND start_time < ? AND end_time > ? LIMIT 1`;
+router.get('/all',auth,admin,(req,res)=>res.json(db.prepare(`SELECT b.*,u.name user_name,u.email user_email,s.name studio_name,p.status payment_status,p.method payment_method FROM bookings b JOIN users u ON u.id=b.user_id JOIN studios s ON s.id=b.studio_id LEFT JOIN payments p ON p.booking_id=b.id ORDER BY b.date DESC,b.start_time DESC`).all()));
+router.get('/me',auth,(req,res)=>res.json(db.prepare(`SELECT b.*,s.name studio_name,p.status payment_status,p.method payment_method FROM bookings b JOIN studios s ON s.id=b.studio_id LEFT JOIN payments p ON p.booking_id=b.id WHERE b.user_id=? ORDER BY b.date DESC,b.start_time DESC`).all(req.session.userId)));
+router.post('/',auth,(req,res)=>{
+ const studio_id=Number(req.body.studio_id), date=String(req.body.date||''), start=String(req.body.start_time||''), end=String(req.body.end_time||'');
+ const studio=db.prepare('SELECT * FROM studios WHERE id=?').get(studio_id);
+ if(!studio)return res.status(404).json({error:'ไม่พบห้องซ้อม'});
+ if(studio.status==='maintenance')return res.status(400).json({error:'ห้องนี้ปิดปรับปรุงอยู่'});
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!validTime(start)||!validTime(end)||start>=end)return res.status(400).json({error:'วันหรือเวลาไม่ถูกต้อง'});
+ const today=new Date().toISOString().slice(0,10); if(date<today)return res.status(400).json({error:'ไม่สามารถจองวันที่ผ่านมาแล้ว'});
+ if(db.prepare(overlapSql).get(studio_id,date,end,start))return res.status(409).json({error:'เวลานี้ถูกจองแล้ว กรุณาเลือกเวลาอื่น'});
+ const hours=(new Date(`2000-01-01T${end}`)-new Date(`2000-01-01T${start}`))/3600000;
+ const total=Math.round(hours*Number(studio.price_per_hour)*100)/100;
+ const r=db.prepare('INSERT INTO bookings(user_id,studio_id,date,start_time,end_time,total_price) VALUES(?,?,?,?,?,?)').run(req.session.userId,studio_id,date,start,end,total);
+ addNotification('booking','มีการจองใหม่',`มีการจอง ${studio.name} วันที่ ${date} ${start}–${end} รอตรวจสอบ`);
+ res.status(201).json({id:Number(r.lastInsertRowid),total_price:total,status:'pending'});
+});
+router.patch('/:id/status',auth,(req,res)=>{
+ const status=String(req.body.status); if(!['pending','confirmed','completed','cancelled'].includes(status))return res.status(400).json({error:'สถานะไม่ถูกต้อง'});
+ const b=db.prepare('SELECT * FROM bookings WHERE id=?').get(req.params.id); if(!b)return res.status(404).json({error:'ไม่พบการจอง'});
+ if(req.session.role!=='admin' && (b.user_id!==req.session.userId || status!=='cancelled'))return res.status(403).json({error:'Forbidden'});
+ db.prepare('UPDATE bookings SET status=? WHERE id=?').run(status,req.params.id);
+ res.json({message:'อัปเดตสถานะสำเร็จ'});
+});
+export default router;
