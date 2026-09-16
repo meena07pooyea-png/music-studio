@@ -2,7 +2,7 @@ services:
   - type: web
     name: music-studio
     runtime: node
-    plan: free
+    plan: starter
     rootDir: msinspect
     buildCommand: npm install && npm run build
     startCommand: npm start
@@ -17,5 +17,9 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      - key: DATABASE_URL
-        sync: false
+      - key: DB_PATH
+        value: /var/data/musicstudio.sqlite
+    disk:
+      name: musicstudio-data
+      mountPath: /var/data
+      sizeGB: 1
